@@ -3,8 +3,10 @@
 Interactive:   python client/main.py
 One-shot:      python client/main.py "I paid 20 USD for a taxi, log it"
 Provider:      LLM_PROVIDER=gemini (default) | ollama   (see .env.example)
+Transport:     MCP_TRANSPORT=stdio (default) | http      (see .env.example)
 """
 import asyncio
+import contextlib
 import datetime
 import os
 import sys
@@ -12,6 +14,7 @@ import sys
 from dotenv import load_dotenv
 
 from mcp import Client, StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -39,6 +42,33 @@ def build_system_prompt() -> str:
     )
 
 
+@contextlib.asynccontextmanager
+async def _mcp_transport():
+    """Yield the right MCP transport based on MCP_TRANSPORT env var."""
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    if transport == "http":
+        url = os.environ.get("MCP_SERVER_URL", "http://127.0.0.1:8000/mcp")
+        api_key = os.environ.get("SERVER_API_KEY")
+        http_client = None
+        if api_key:
+            import httpx2
+            http_client = httpx2.AsyncClient(headers={"Authorization": f"Bearer {api_key}"})
+        try:
+            async with Client(streamable_http_client(url, http_client=http_client)) as client:
+                yield client
+        finally:
+            if http_client:
+                await http_client.aclose()
+    else:
+        server_env = {k: os.environ[k] for k in
+                      ("EXPENSE_DB_PATH", "EXPENSE_EXPORT_DIR", "SERVER_API_KEY") if k in os.environ}
+        params = StdioServerParameters(command=sys.executable, args=[SERVER_PATH], env=server_env or None)
+        log_path = os.path.join(HERE, "..", "server.log")
+        with open(log_path, "a", encoding="utf-8") as server_log:
+            async with Client(stdio_client(params, errlog=server_log)) as client:
+                yield client
+
+
 async def amain() -> None:
     load_dotenv()
     try:
@@ -46,54 +76,49 @@ async def amain() -> None:
     except LLMError as e:
         sys.exit(f"Setup problem: {e}")
 
-    # The server subprocess gets ONLY what it needs. Your LLM API key is never passed to it.
-    server_env = {k: os.environ[k] for k in ("EXPENSE_DB_PATH", "EXPENSE_EXPORT_DIR") if k in os.environ}
-    params = StdioServerParameters(command=sys.executable, args=[SERVER_PATH], env=server_env or None)
-    log_path = os.path.join(HERE, "..", "server.log")  # server logs go to a file, keeping the chat clean
+    async with _mcp_transport() as mcp_client:
+        tools = (await mcp_client.list_tools()).tools
+        transport_name = os.environ.get("MCP_TRANSPORT", "stdio").upper()
+        print(f"Connected ({transport_name}). LLM: {type(llm).__name__} | tools: {', '.join(t.name for t in tools)}")
+        system, history = build_system_prompt(), []
+        cats = await load_categories(mcp_client)  # RESOURCE: the app attaches this context
+        if cats:
+            system += f"\nValid expense categories (from the server): {cats}"
 
-    with open(log_path, "a", encoding="utf-8") as server_log:
-        async with Client(stdio_client(params, errlog=server_log)) as mcp_client:
-            tools = (await mcp_client.list_tools()).tools
-            print(f"Connected. LLM: {type(llm).__name__} | tools: {', '.join(t.name for t in tools)}")
-            system, history = build_system_prompt(), []
-            cats = await load_categories(mcp_client)  # RESOURCE: the app attaches this context
-            if cats:
-                system += f"\nValid expense categories (from the server): {cats}"
+        async def ask(text: str) -> None:
+            try:
+                answer = await run_turn(mcp_client, llm, tools, history, text, system,
+                                        on_event=lambda s: print("  " + s))
+                print(f"\n{answer}\n")
+            except LLMError as e:
+                print(f"\n[LLM problem] {e}\n")
 
-            async def ask(text: str) -> None:
+        if len(sys.argv) > 1:
+            await ask(" ".join(sys.argv[1:]))
+            return
+        print("Type a message. Commands: /review [YYYY-MM]  /reset  /quit")
+        while True:
+            try:
+                text = (await asyncio.to_thread(input, "you> ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not text:
+                continue
+            if text in ("/quit", "/exit"):
+                break
+            if text.startswith("/review"):  # PROMPT: a template the user picks
+                month = (text.split() + [datetime.date.today().strftime("%Y-%m")])[1]
                 try:
-                    answer = await run_turn(mcp_client, llm, tools, history, text, system,
-                                            on_event=lambda s: print("  " + s))
-                    print(f"\n{answer}\n")
-                except LLMError as e:
-                    print(f"\n[LLM problem] {e}\n")
-
-            if len(sys.argv) > 1:
-                await ask(" ".join(sys.argv[1:]))
-                return
-            print("Type a message. Commands: /review [YYYY-MM]  /reset  /quit")
-            while True:
-                try:
-                    text = (await asyncio.to_thread(input, "you> ")).strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    break
-                if not text:
+                    text = await get_prompt_text(mcp_client, "monthly_review", {"month": month})
+                except Exception as e:
+                    print(f"Could not use that prompt: {e}")
                     continue
-                if text in ("/quit", "/exit"):
-                    break
-                if text.startswith("/review"):  # PROMPT: a template the user picks
-                    month = (text.split() + [datetime.date.today().strftime("%Y-%m")])[1]
-                    try:
-                        text = await get_prompt_text(mcp_client, "monthly_review", {"month": month})
-                    except Exception as e:
-                        print(f"Could not use that prompt: {e}")
-                        continue
-                if text == "/reset":
-                    history.clear()
-                    print("History cleared.")
-                    continue
-                await ask(text)
+            if text == "/reset":
+                history.clear()
+                print("History cleared.")
+                continue
+            await ask(text)
 
 
 if __name__ == "__main__":

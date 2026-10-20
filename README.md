@@ -95,6 +95,32 @@ you> /review 2026-10
   ...
 ```
 
+## Streamable HTTP Transport
+
+By default the client spawns the server as a subprocess over **stdio**. You can instead run the server standalone over **Streamable HTTP**:
+
+```bash
+# Terminal 1 — start the server on HTTP
+python server/server.py --transport http --port 8000
+
+# Terminal 2 — connect the client to it
+MCP_TRANSPORT=http python client/main.py
+```
+
+### Bearer Token Authentication
+
+Set `SERVER_API_KEY` on both sides to require a Bearer token:
+
+```bash
+# Terminal 1
+SERVER_API_KEY=my-secret python server/server.py --transport http
+
+# Terminal 2
+MCP_TRANSPORT=http SERVER_API_KEY=my-secret python client/main.py
+```
+
+Unauthenticated requests receive `401 Unauthorized`.
+
 ## Inspecting the Server
 
 The server can be tested standalone using the MCP Inspector:

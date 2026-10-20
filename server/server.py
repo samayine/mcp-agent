@@ -1,4 +1,13 @@
-"""Expense Tracker MCP server (stdio). NEVER print() here: stdout is the protocol channel."""
+"""Expense Tracker MCP server (stdio or streamable HTTP with optional bearer auth).
+
+NEVER print() here: in stdio mode stdout is the protocol channel.
+
+Usage:
+    python server.py                      # stdio (default)
+    python server.py --transport http      # HTTP on :8000
+    python server.py --transport http --port 9000
+"""
+import argparse
 import csv
 import json
 import logging
@@ -19,7 +28,40 @@ log = logging.getLogger("expense-server")
 EXPORT_DIR = os.environ.get(
     "EXPENSE_EXPORT_DIR", os.path.join(os.path.dirname(__file__), "..", "exports"))
 
-mcp = MCPServer("expense-tracker")
+
+# ---- Bearer token auth (only active when SERVER_API_KEY is set) ----
+def _build_auth():
+    """Return (token_verifier, auth_settings) if SERVER_API_KEY is configured, else (None, None)."""
+    api_key = os.environ.get("SERVER_API_KEY")
+    if not api_key:
+        return None, None
+
+    from mcp.server.auth.middleware.bearer_auth import AccessToken, TokenVerifier
+    from mcp.server.auth.settings import AuthSettings
+
+    class StaticKeyVerifier(TokenVerifier):
+        """Checks that the Bearer token matches a pre-shared key."""
+
+        async def verify_token(self, token: str) -> AccessToken | None:
+            if token != api_key:
+                return None
+            return AccessToken(
+                token=token,
+                client_id="expense-client",
+                scopes=["tools", "resources", "prompts"],
+            )
+
+    auth_settings = AuthSettings(
+        issuer_url="http://localhost",
+        resource_server_url="http://localhost",
+        validate_token_resource=False,
+    )
+    log.info("Bearer auth enabled (SERVER_API_KEY is set)")
+    return StaticKeyVerifier(), auth_settings
+
+
+_token_verifier, _auth_settings = _build_auth()
+mcp = MCPServer("expense-tracker", token_verifier=_token_verifier, auth=_auth_settings)
 db.init_db()
 
 
@@ -157,5 +199,19 @@ def monthly_review(month: str) -> str:
     )
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Expense Tracker MCP Server")
+    p.add_argument("--transport", choices=["stdio", "http"], default="stdio",
+                   help="Transport to use (default: stdio)")
+    p.add_argument("--port", type=int, default=8000, help="Port for HTTP transport (default: 8000)")
+    p.add_argument("--host", default="127.0.0.1", help="Host for HTTP transport (default: 127.0.0.1)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    args = _parse_args()
+    if args.transport == "http":
+        log.info("Starting HTTP transport on %s:%d", args.host, args.port)
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    else:
+        mcp.run(transport="stdio")
