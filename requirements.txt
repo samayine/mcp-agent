@@ -1,0 +1,4 @@
+mcp>=2,<3
+httpx
+python-dotenv
+google-genai

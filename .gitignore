@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Runtime artifacts
+*.log
+*.db
+exports/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
