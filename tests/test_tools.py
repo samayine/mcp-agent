@@ -19,6 +19,8 @@ async def main():
         print("TOOLS:", [t.name for t in (await c.list_tools()).tools])
         for amt, cat, note in [(500, "food", "lunch"), (120, "transport", "taxi"), (80, "food", "=HYPERLINK(\"evil\")")]:
             await c.call_tool("expense_add", {"amount": amt, "category": cat, "note": note})
+        show("HUGE amount", await c.call_tool("expense_add", {"amount": 1e300, "category": "food"}))
+        show("NaN amount", await c.call_tool("expense_add", {"amount": float("nan"), "category": "food"}))
         show("SUMMARY", await c.call_tool("expense_summary_by_category", {"month": MONTH}))
         show("SUMMARY empty", await c.call_tool("expense_summary_by_category", {"month": "1999-01"}))
         show("SUMMARY bad", await c.call_tool("expense_summary_by_category", {"month": "oct"}))
