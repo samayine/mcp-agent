@@ -16,10 +16,13 @@ import sys
 
 import db
 import fx
+from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS
+
+load_dotenv()
 
 # Logs go to stderr only.
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
